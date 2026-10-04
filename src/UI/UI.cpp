@@ -44,7 +44,8 @@ namespace RMA::UI
 			{
 				Header,
 				Row,
-				Races
+				Races,
+				Choices  // another mod's list (Apprentice's classes or traits), as tiles of its own
 			};
 
 			Kind        kind{ Kind::Row };
@@ -53,6 +54,7 @@ namespace RMA::UI
 			bool        shortLabel{ false };
 			ImU32       hue{ Color::Hues[0] };
 			int         stripe{ 0 };  // alternates the row tone inside a run
+			std::vector<std::size_t> members;  // Choices: the entries, in list order
 		};
 
 		struct State
@@ -499,8 +501,17 @@ namespace RMA::UI
 			}
 
 			bool racesPlaced = false;
+			int  choiceItem = -1;
 			for (std::size_t v = 0; v < visible.size(); ++v) {
 				const auto& e = a_model.entries[visible[v]];
+				if (e.control == Control::Choice) {
+					if (choiceItem < 0) {
+						choiceItem = static_cast<int>(s.items.size());
+						s.items.push_back({ Item::Kind::Choices });
+					}
+					s.items[choiceItem].members.push_back(visible[v]);
+					continue;
+				}
 				if (e.control == Control::Race) {
 					if (!racesPlaced) {
 						s.items.push_back({ Item::Kind::Races });
@@ -520,7 +531,7 @@ namespace RMA::UI
 					std::size_t run = 1;
 					while (v + run < visible.size()) {
 						const auto& next = a_model.entries[visible[v + run]];
-						if (next.group != e.group || next.control == Control::Race) {
+						if (next.group != e.group || next.control == Control::Race || next.control == Control::Choice) {
 							break;
 						}
 						++run;
@@ -820,7 +831,7 @@ namespace RMA::UI
 			im::SetCursorScreenPos({ boxX, ctrlY });
 			const bool clicked = im::InvisibleButton("##readout", { boxW, g.ctrl });
 			const bool hovered = im::IsItemHovered();
-			dl::AddRectFilled(list, { boxX, ctrlY }, { boxX + boxW, ctrlY + g.ctrl }, hovered && headPart ? Color::FrameHover : Color::Track, g.u * 0.25f, 0);
+			dl::AddRectFilled(list, { boxX, ctrlY }, { boxX + boxW, ctrlY + g.ctrl }, hovered && headPart ? Color::FrameHover : Color::Track, Round(g.u * 0.25f), 0);
 
 			const auto counter = std::format("{} / {}", cur, maxV);
 			const auto counterSize = W::SmallTextSize(counter.c_str());
@@ -889,7 +900,7 @@ namespace RMA::UI
 			const ImVec2 pos{ a_pos.x + g.padX, ctrlY };
 			const bool   clicked = im::InvisibleButton("##texture", { width, g.ctrl });
 			const bool   hovered = im::IsItemHovered();
-			dl::AddRectFilled(list, pos, pos + ImVec2{ width, g.ctrl }, hovered ? Color::FrameHover : Color::Frame, g.u * 0.25f, 0);
+			dl::AddRectFilled(list, pos, pos + ImVec2{ width, g.ctrl }, hovered ? Color::FrameHover : Color::Frame, Round(g.u * 0.25f), 0);
 			DrawIcon(list, pos + ImVec2{ g.u * 0.8f, g.ctrl * 0.5f }, Icon::Brush, Color::Gold);
 			const auto text = W::Ellipsize(stem, width - g.u * 3.5f);
 			const auto ts = im::CalcTextSize(text.c_str());
@@ -908,7 +919,7 @@ namespace RMA::UI
 			const ImVec2 max = a_pos + ImVec2{ a_width, g.height };
 			const bool   hovered = im::IsMouseHoveringRect(a_pos, max) && im::IsWindowHovered();
 			const bool   changed = a_entry.IsChanged();
-			const float  rounding = g.u * 0.3f;
+			const float rounding = Round(g.u * 0.3f);
 			// card: alternating tone, hairline border, a colour edge for the
 			// slider family; a gold outline marks what changed this session
 			dl::AddRectFilled(list, a_pos, max, hovered ? Color::RowHover : (a_item.stripe % 2 ? Color::RowAlt : Color::Row), rounding, 0);
@@ -971,7 +982,7 @@ namespace RMA::UI
 				const bool  clicked = im::InvisibleButton("##race", { cardW, a_cardH });
 				const bool  hovered = im::IsItemHovered();
 				const bool  current = a_model.IsCurrentRace(e);
-				const float rounding = u * 0.3f;
+				const float rounding = Round(u * 0.3f);
 
 				dl::AddRectFilled(list, pos, max, hovered ? Color::RowHover : Color::Row, rounding, 0);
 				dl::AddRectFilled(list, pos, max, current ? Color::GoldWashStrong : WithAlpha(tint, hovered ? 0.22f : 0.12f), rounding, 0);
@@ -985,13 +996,66 @@ namespace RMA::UI
 				}
 				const auto name = W::Ellipsize(e.label, max.x - textX - u * 0.4f);
 				const auto ns = im::CalcTextSize(name.c_str());
-				dl::AddText(list, { textX, pos.y + (a_cardH - ns.y) * 0.5f }, current ? Color::GoldBright : hovered ? Color::Text : IM_COL32(214, 218, 226, 255), name.c_str());
+				dl::AddText(list, { textX, pos.y + (a_cardH - ns.y) * 0.5f }, current ? Color::GoldBright : hovered ? Color::Text : Color::TileText, name.c_str());
 				if (hovered) {
 					const auto tip = current ? std::string("Current race") : "Change the race to " + e.label;
 					W::Tooltip(tip.c_str());
 				}
 				if (clicked && !current) {
 					a_model.ChangeRace(e);
+				}
+				im::PopID();
+			}
+			im::SetCursorScreenPos(origin + ImVec2{ 0.0f, ((index + a_columns - 1) / a_columns) * (a_cardH + a_gap) });
+		}
+
+		// another mod's list on the race list (Apprentice's classes or traits): the same tiles as the races, the
+		// entry's own description as the tooltip, the menu's own item-press handler on a click
+		void RenderChoices(Model& a_model, const std::vector<std::size_t>& a_members, float a_width, float a_cardH, float a_gap, int a_columns)
+		{
+			auto*       list = im::GetWindowDrawList();
+			const float u = U();
+			const float cardW = std::floor((a_width - a_gap * (a_columns - 1)) / a_columns);
+			const auto  origin = im::GetCursorScreenPos();
+			int         index = 0;
+			for (const auto i : a_members) {
+				if (i >= a_model.entries.size()) {
+					continue;
+				}
+				auto&        e = a_model.entries[i];
+				const int    col = index % a_columns;
+				const int    row = index / a_columns;
+				const ImVec2 pos = origin + ImVec2{ col * (cardW + a_gap), row * (a_cardH + a_gap) };
+				const ImVec2 max = pos + ImVec2{ cardW, a_cardH };
+				const ImU32  tint = (row + col) % 2 ? Color::Hues[3] : Color::Hues[1];
+				++index;
+
+				im::PushID(e.key.c_str());
+				im::SetCursorScreenPos(pos);
+				const bool  clicked = im::InvisibleButton("##choice", { cardW, a_cardH });
+				const bool  hovered = im::IsItemHovered();
+				const bool  current = a_model.IsCurrentChoice(e);
+				const float rounding = Round(u * 0.3f);
+
+				dl::AddRectFilled(list, pos, max, hovered ? Color::RowHover : Color::Row, rounding, 0);
+				dl::AddRectFilled(list, pos, max, current ? Color::GoldWashStrong : WithAlpha(tint, hovered ? 0.22f : 0.12f), rounding, 0);
+				dl::AddRectFilled(list, pos, { pos.x + std::max(3.0f, std::floor(u * 0.16f)), max.y }, current ? Color::Gold : tint, rounding, ImGuiMCP::ImDrawFlags_RoundCornersLeft);
+				dl::AddRect(list, pos, max, current ? Color::BorderStrong : Color::RowBorder, rounding, 0, current ? 1.5f : 1.0f);
+
+				float textX = pos.x + u * 0.65f;
+				if (current) {
+					DrawIcon(list, { textX + u * 0.35f, pos.y + a_cardH * 0.5f }, Icon::Check, Color::GoldBright);
+					textX += u * 1.1f;
+				}
+				const auto name = W::Ellipsize(e.label, max.x - textX - u * 0.4f);
+				const auto ns = im::CalcTextSize(name.c_str());
+				dl::AddText(list, { textX, pos.y + (a_cardH - ns.y) * 0.5f }, current ? Color::GoldBright : hovered ? Color::Text : Color::TileText, name.c_str());
+				if (hovered) {
+					const auto tip = e.description.empty() ? (current ? std::string("Chosen") : "Choose " + e.label) : e.label + "\n\n" + e.description;
+					W::Tooltip(tip.c_str());
+				}
+				if (clicked && !current) {
+					a_model.PressChoice(e);
 				}
 				im::PopID();
 			}
@@ -1628,10 +1692,10 @@ namespace RMA::UI
 				const bool clicked = im::InvisibleButton(a_id, { width, h });
 				const bool hovered = im::IsItemHovered();
 				if (a_selected || hovered) {
-					dl::AddRectFilled(list, pos, pos + ImVec2{ width, h }, a_selected ? WithAlpha(a_hue, 0.2f) : Color::RowHover, u * 0.3f, 0);
+					dl::AddRectFilled(list, pos, pos + ImVec2{ width, h }, a_selected ? WithAlpha(a_hue, 0.2f) : Color::RowHover, Round(u * 0.3f), 0);
 				}
 				if (a_selected) {
-					dl::AddRectFilled(list, pos, pos + ImVec2{ std::max(3.0f, std::floor(u * 0.16f)), h }, a_hue, u * 0.3f, ImGuiMCP::ImDrawFlags_RoundCornersLeft);
+					dl::AddRectFilled(list, pos, pos + ImVec2{ std::max(3.0f, std::floor(u * 0.16f)), h }, a_hue, Round(u * 0.3f), ImGuiMCP::ImDrawFlags_RoundCornersLeft);
 				}
 				DrawIcon(list, pos + ImVec2{ u * 0.95f, h * 0.5f }, a_icon, a_hue);
 				const float dotSpace = a_changed > 0 ? u * 0.8f : 0.0f;
@@ -1702,6 +1766,9 @@ namespace RMA::UI
 					h = headerH;
 				} else if (item.kind == Item::Kind::Races) {
 					h = ((races + raceColumns - 1) / raceColumns) * (cardH + gap) - gap;
+				} else if (item.kind == Item::Kind::Choices) {
+					const int n = static_cast<int>(item.members.size());
+					h = ((n + raceColumns - 1) / raceColumns) * (cardH + gap) - gap;
 				}
 				const bool inView = y + h >= scroll - g.height && y <= scroll + view + g.height;
 				if (inView) {
@@ -1714,8 +1781,8 @@ namespace RMA::UI
 							const auto   ts = im::CalcTextSize(item.group.c_str());
 							const float  tabH = ts.y + g.u * 0.45f;
 							const ImVec2 tab{ pos.x, pos.y + headerH - tabH - g.u * 0.05f };
-							dl::AddRectFilled(list, tab, tab + ImVec2{ ts.x + g.u * 1.2f, tabH }, WithAlpha(item.hue, 0.18f), g.u * 0.25f, 0);
-							dl::AddRectFilled(list, tab, tab + ImVec2{ std::max(3.0f, std::floor(g.u * 0.16f)), tabH }, item.hue, g.u * 0.25f, ImGuiMCP::ImDrawFlags_RoundCornersLeft);
+							dl::AddRectFilled(list, tab, tab + ImVec2{ ts.x + g.u * 1.2f, tabH }, WithAlpha(item.hue, 0.18f), Round(g.u * 0.25f), 0);
+							dl::AddRectFilled(list, tab, tab + ImVec2{ std::max(3.0f, std::floor(g.u * 0.16f)), tabH }, item.hue, Round(g.u * 0.25f), ImGuiMCP::ImDrawFlags_RoundCornersLeft);
 							dl::AddText(list, tab + ImVec2{ g.u * 0.65f, (tabH - ts.y) * 0.5f }, item.hue, item.group.c_str());
 							const float ly = std::floor(tab.y + tabH * 0.5f);
 							dl::AddLine(list, { tab.x + ts.x + g.u * 1.6f, ly }, { pos.x + width, ly }, WithAlpha(item.hue, 0.35f), 1.0f);
@@ -1723,6 +1790,9 @@ namespace RMA::UI
 						}
 					case Item::Kind::Races:
 						RenderRaces(a_model, width, cardH, gap, raceColumns);
+						break;
+					case Item::Kind::Choices:
+						RenderChoices(a_model, item.members, width, cardH, gap, raceColumns);
 						break;
 					case Item::Kind::Row:
 						RenderRow(a_model, a_model.entries[item.entry], item, g, pos, width);
@@ -1901,7 +1971,7 @@ namespace RMA::UI
 				const auto  stem = Text::FileStem(file);
 				const bool  hovered = im::IsMouseHoveringRect(pos, pos + ImVec2{ width, b });
 				if (hovered) {
-					dl::AddRectFilled(list, pos, pos + ImVec2{ width, b }, Color::RowHover, u * 0.25f, 0);
+					dl::AddRectFilled(list, pos, pos + ImVec2{ width, b }, Color::RowHover, Round(u * 0.25f), 0);
 				}
 				const float textW = width - b * 2.0f - u * 1.2f;
 				float       x = pos.x + u * 0.3f;
